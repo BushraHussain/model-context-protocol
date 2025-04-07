@@ -37,7 +37,6 @@ docker run \
         CREATE (a:Person {name: "Alice"});
         CREATE (b:Movie {title: "The Matrix"});
         CREATE (a)-[:LIKES]->(b);
-        Verify creation:
     ```
 
 4. Verify creation:
@@ -46,7 +45,7 @@ docker run \
     MATCH (n) RETURN n;
     ```
 
-## Part 2: MCP Server Setup (Neo4j + FastAPI)
+## 📦 Part 2: MCP Server Setup (Neo4j + FastAPI)
 
 1. Clone the MCP server:
 
@@ -81,7 +80,7 @@ docker run \
     poetry run uvicorn fastapi_wrapper:app --host 0.0.0.0 --port 8000
 ```
 
-## Part 3: AI Agent App (OpenAI Agent SDK)
+## 📦 Part 3: AI Agent App (OpenAI Agent SDK)
 
 1. Initialize a new project using uv:
 
@@ -98,19 +97,23 @@ docker run \
 
 3. Install dependencies:
 
-uv add openai-agents python-dotenv
+```bash
+    uv add openai-agents python-dotenv
+```
 
 4. Create a .env file:
 
-OPENAI_API_KEY=your-api-key
+```bash
+    OPENAI_API_KEY=your-api-key
+```
 
 5. Create a file my_graph_agent.py with:
 
-- An OpenAI Agent
+    - An OpenAI Agent
 
-- A tool that sends Cypher queries to the MCP server
+    - A tool that sends Cypher queries to the MCP server
 
-- A prompt to test it
+    - A prompt to test it
 
 6. Run the agent:
 
