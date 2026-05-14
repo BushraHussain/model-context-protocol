@@ -1,5 +1,4 @@
 # To run the server, use command "mcp dev mcp_server.py"
-
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 mcp = FastMCP("My MCP server", log_level="ERROR")
@@ -43,3 +42,6 @@ def edit_document(
 
     docs[doc_id] = docs[doc_id].replace(old_str, new_str)
 
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio")
