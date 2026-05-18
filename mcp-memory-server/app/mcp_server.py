@@ -71,5 +71,36 @@ def get_memories(user_id: str) -> str:
     return str(rows)
 
 
+@mcp.tool()
+def search_memory(user_id: str, query: str) -> str:
+    """Search memories by keyword for a user."""
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT id, text, category, created_at
+        FROM memories
+        WHERE user_id = %s
+        AND (
+            text ILIKE %s
+            OR category ILIKE %s
+        )
+        ORDER BY created_at DESC;
+        """,
+        (user_id, f"%{query}%", f"%{query}%")
+    )
+
+    rows = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    if not rows:
+        return "No matching memories found."
+
+    return str(rows)
+
 if __name__ == "__main__":
     mcp.run()
