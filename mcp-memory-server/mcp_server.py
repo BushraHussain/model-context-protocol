@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from sentence_transformers import SentenceTransformer
 from datetime import datetime
+import ollama
 
 load_dotenv()
 
@@ -41,6 +42,32 @@ def format_memory_results(rows):
 
     return json.dumps({"results": results}, indent=2)
 
+def generate_answer(question: str, memories: str) -> str:
+    prompt = f"""
+You are a helpful memory assistant.
+
+Use only the memories below to answer the question.
+If the answer is not in the memories, say: I don't have enough memory context.
+
+Memories:
+{memories}
+
+Question:
+{question}
+
+Answer:
+"""
+
+    response = ollama.chat(
+        model="llama3.2",
+        messages=[
+            {"role": "user", "content": prompt}
+        ]
+    )
+
+    return response["message"]["content"]
+
+# ================ Memory Tools ================
 
 @mcp.tool()
 def store_memory(
@@ -260,6 +287,23 @@ def hybrid_search_memory(user_id: str, query: str, limit: int = 5) -> str:
 
     return json.dumps({"results": results}, indent=2)
 
+@mcp.tool()
+def answer_from_memory(user_id: str, question: str) -> str:
+    """Answer a question using retrieved memories."""
+
+    search_result = hybrid_search_memory(user_id=user_id, query=question, limit=5)
+
+    data = json.loads(search_result)
+
+    if not data.get("results"):
+        return "I don't have enough memory context."
+
+    memories_text = "\n".join([
+        f"- {item['text']} (category: {item['category']})"
+        for item in data["results"]
+    ])
+
+    return generate_answer(question, memories_text)
 
 if __name__ == "__main__":
     mcp.run()
