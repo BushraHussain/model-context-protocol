@@ -1,5 +1,5 @@
-# uv run --with mcp mcp run app/mcp_server.py
-# cd app mcp-inspector
+# mcp-inspector python mcp_server.py
+# mcp-inspector
 
 import os
 import json
@@ -44,10 +44,13 @@ def format_memory_results(rows):
 
 def generate_answer(question: str, memories: str) -> str:
     prompt = f"""
-You are a helpful memory assistant.
+You are a careful memory assistant.
 
-Use only the memories below to answer the question.
-If the answer is not in the memories, say: I don't have enough memory context.
+Rules:
+1. Use only the memories provided.
+2. Do not invent facts.
+3. If memories are weak or unrelated, say you don't have enough memory context.
+4. Answer briefly and clearly.
 
 Memories:
 {memories}
@@ -60,14 +63,37 @@ Answer:
 
     response = ollama.chat(
         model="llama3.2",
-        messages=[
-            {"role": "user", "content": prompt}
-        ]
+        messages=[{"role": "user", "content": prompt}]
     )
 
     return response["message"]["content"]
 
-# ================ Memory Tools ================
+def build_memory_context(results):
+    return "\n".join([
+        f"- ID {item['id']}: {item['text']} | category: {item['category']} | similarity: {item['similarity']}"
+        for item in results
+    ])
+
+def calculate_confidence(results):
+    if not results:
+        return "none"
+
+    best_similarity = max(item["similarity"] for item in results)
+
+    if best_similarity >= 0.55:
+        return "high"
+    elif best_similarity >= 0.35:
+        return "medium"
+    else:
+        return "low"
+    
+def filter_relevant_results(results):
+    return [
+        item for item in results
+        if item["keyword_match"] is True or item["similarity"] >= 0.65
+    ]
+
+# ============================= Memory Tools ==============================
 
 @mcp.tool()
 def store_memory(
@@ -289,21 +315,30 @@ def hybrid_search_memory(user_id: str, query: str, limit: int = 5) -> str:
 
 @mcp.tool()
 def answer_from_memory(user_id: str, question: str) -> str:
-    """Answer a question using retrieved memories."""
+    """Answer a question using only strongly relevant retrieved memories."""
 
     search_result = hybrid_search_memory(user_id=user_id, query=question, limit=5)
-
     data = json.loads(search_result)
 
-    if not data.get("results"):
-        return "I don't have enough memory context."
+    raw_results = data.get("results", [])
+    results = filter_relevant_results(raw_results)
 
-    memories_text = "\n".join([
-        f"- {item['text']} (category: {item['category']})"
-        for item in data["results"]
-    ])
+    if not results:
+        return json.dumps({
+            "answer": "I don't have enough memory context.",
+            "confidence": "none",
+            "sources": []
+        }, indent=2)
 
-    return generate_answer(question, memories_text)
+    confidence = calculate_confidence(results)
+    memory_context = build_memory_context(results)
+    answer = generate_answer(question, memory_context)
+
+    return json.dumps({
+        "answer": answer,
+        "confidence": confidence,
+        "sources": results
+    }, indent=2)
 
 if __name__ == "__main__":
     mcp.run()
