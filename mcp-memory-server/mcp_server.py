@@ -93,6 +93,28 @@ def filter_relevant_results(results):
         if item["keyword_match"] is True or item["similarity"] >= 0.65
     ]
 
+def auto_tag_memory(text: str) -> list[str]:
+    prompt = f"""
+Generate 3 short tags for this memory.
+Return only comma-separated tags.
+
+Memory:
+{text}
+"""
+
+    response = ollama.chat(
+        model="llama3.2",
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    tags_text = response["message"]["content"]
+
+    return [
+        tag.strip().lower()
+        for tag in tags_text.split(",")
+        if tag.strip()
+    ]
+
 # ============================= Memory Tools ==============================
 
 @mcp.tool()
@@ -109,13 +131,15 @@ def store_memory(
     conn = get_conn()
     cur = conn.cursor()
 
+    tags = auto_tag_memory(text)
+
     cur.execute(
         """
-        INSERT INTO memories (user_id, text, category, metadata, embedding)
-        VALUES (%s, %s, %s, %s, %s)
+        INSERT INTO memories (user_id, text, category, metadata, embedding, tags)
+        VALUES (%s, %s, %s, %s, %s, %s)
         RETURNING id;
         """,
-        (user_id, text, category, json.dumps(metadata), embedding)
+        (user_id, text, category, json.dumps(metadata), embedding, tags)
     )
 
     memory_id = cur.fetchone()[0]
@@ -339,6 +363,109 @@ def answer_from_memory(user_id: str, question: str) -> str:
         "confidence": confidence,
         "sources": results
     }, indent=2)
+
+@mcp.tool()
+def summarize_memories(user_id: str, topic: str = "") -> str:
+    """Summarize memories for a user, optionally by topic."""
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    if topic:
+        cur.execute(
+            """
+            SELECT text, category, tags
+            FROM memories
+            WHERE user_id = %s
+            AND (
+                text ILIKE %s
+                OR category ILIKE %s
+                OR %s = ANY(tags)
+            )
+            ORDER BY created_at DESC
+            LIMIT 20;
+            """,
+            (user_id, f"%{topic}%", f"%{topic}%", topic.lower())
+        )
+    else:
+        cur.execute(
+            """
+            SELECT text, category, tags
+            FROM memories
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            LIMIT 20;
+            """,
+            (user_id,)
+        )
+
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    if not rows:
+        return "No memories found to summarize."
+
+    memory_text = "\n".join([
+        f"- {text} | category: {category} | tags: {tags}"
+        for text, category, tags in rows
+    ])
+
+    prompt = f"""
+Summarize these user memories clearly and briefly.
+Group related ideas if useful.
+
+Memories:
+{memory_text}
+
+Summary:
+"""
+
+    response = ollama.chat(
+        model="llama3.2",
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    return response["message"]["content"]
+
+@mcp.tool()
+def search_by_tag(user_id: str, tag: str) -> str:
+    """Search memories by tag using flexible partial matching."""
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT id, text, category, tags, created_at
+        FROM memories
+        WHERE user_id = %s
+        AND EXISTS (
+            SELECT 1
+            FROM unnest(tags) AS t
+            WHERE t ILIKE %s
+        )
+        ORDER BY created_at DESC;
+        """,
+        (user_id, f"%{tag.lower()}%")
+    )
+
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    results = [
+        {
+            "id": row[0],
+            "text": row[1],
+            "category": row[2].strip() if row[2] else None,
+            "tags": row[3],
+            "created_at": row[4].isoformat()
+        }
+        for row in rows
+    ]
+
+    return json.dumps({"results": results}, indent=2)
 
 if __name__ == "__main__":
     mcp.run()
