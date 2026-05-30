@@ -91,7 +91,7 @@ def filter_relevant_results(results):
     return [
         item for item in results
         if item["keyword_match"] is True or item["similarity"] >= 0.65
-    ]
+    ][:3]
 
 def auto_tag_memory(text: str) -> list[str]:
     prompt = f"""
@@ -115,6 +115,53 @@ Memory:
         if tag.strip()
     ]
 
+def find_duplicate_memory(user_id: str, text: str):
+    embedding = create_embedding(text)
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT id, text, 1 - (embedding <=> %s::vector) AS similarity
+        FROM memories
+        WHERE user_id = %s
+        AND is_active = TRUE
+        AND embedding IS NOT NULL
+        ORDER BY similarity DESC
+        LIMIT 1;
+        """,
+        (embedding, user_id)
+    )
+
+    row = cur.fetchone()
+
+    cur.close()
+    conn.close()
+
+    if row and float(row[2]) >= 0.88:
+        return {
+            "id": row[0],
+            "text": row[1],
+            "similarity": round(float(row[2]), 4)
+        }
+
+    return None
+
+def calculate_importance(text: str, category: str) -> int:
+    important_words = ["goal", "project", "business", "startup", "deadline", "important"]
+
+    score = 3
+
+    if category.lower() in ["business", "project", "career"]:
+        score += 1
+
+    if any(word in text.lower() for word in important_words):
+        score += 1
+
+    return min(score, 5)
+
+
 # ============================= Memory Tools ==============================
 
 @mcp.tool()
@@ -132,14 +179,24 @@ def store_memory(
     cur = conn.cursor()
 
     tags = auto_tag_memory(text)
+    duplicate = find_duplicate_memory(user_id, text)
+
+    if duplicate:
+        return json.dumps({
+            "status": "duplicate_detected",
+            "message": "Similar memory already exists.",
+            "existing_memory": duplicate
+        }, indent=2)
+    
+    importance = calculate_importance(text, category)
 
     cur.execute(
         """
-        INSERT INTO memories (user_id, text, category, metadata, embedding, tags)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO memories (user_id, text, category, metadata, embedding, tags, importance)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         RETURNING id;
         """,
-        (user_id, text, category, json.dumps(metadata), embedding, tags)
+        (user_id, text, category, json.dumps(metadata), embedding, tags, importance)
     )
 
     memory_id = cur.fetchone()[0]
@@ -163,6 +220,7 @@ def get_memories(user_id: str) -> str:
         SELECT id, text, category, created_at
         FROM memories
         WHERE user_id = %s
+        AND is_active = TRUE
         ORDER BY created_at DESC;
         """,
         (user_id,)
@@ -188,6 +246,7 @@ def search_memory(user_id: str, query: str) -> str:
         SELECT id, text, category, created_at
         FROM memories
         WHERE user_id = %s
+        AND is_active = TRUE
         AND (
             text ILIKE %s
             OR category ILIKE %s
@@ -234,6 +293,7 @@ def semantic_search_memory(user_id: str, query: str, limit: int = 5) -> str:
             1 - (embedding <=> %s::vector) AS similarity
         FROM memories
         WHERE user_id = %s
+        AND is_active = TRUE
         AND embedding IS NOT NULL
         AND 1 - (embedding <=> %s::vector) >= %s
         ORDER BY similarity DESC
@@ -287,6 +347,7 @@ def hybrid_search_memory(user_id: str, query: str, limit: int = 5) -> str:
             END AS keyword_match
         FROM memories
         WHERE user_id = %s
+        AND is_active = TRUE
         AND embedding IS NOT NULL
         AND (
             1 - (embedding <=> %s::vector) >= %s
@@ -377,6 +438,7 @@ def summarize_memories(user_id: str, topic: str = "") -> str:
             SELECT text, category, tags
             FROM memories
             WHERE user_id = %s
+            AND is_active = TRUE
             AND (
                 text ILIKE %s
                 OR category ILIKE %s
@@ -440,6 +502,7 @@ def search_by_tag(user_id: str, tag: str) -> str:
         SELECT id, text, category, tags, created_at
         FROM memories
         WHERE user_id = %s
+        AND is_active = TRUE
         AND EXISTS (
             SELECT 1
             FROM unnest(tags) AS t
@@ -466,6 +529,78 @@ def search_by_tag(user_id: str, tag: str) -> str:
     ]
 
     return json.dumps({"results": results}, indent=2)
+
+@mcp.tool()
+def delete_memory(memory_id: int) -> str:
+    """Soft delete a memory."""
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        UPDATE memories
+        SET is_active = FALSE, updated_at = NOW()
+        WHERE id = %s;
+        """,
+        (memory_id,)
+    )
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return f"Memory {memory_id} deleted."
+
+@mcp.tool()
+def update_memory(memory_id: int, new_text: str) -> str:
+    """Update memory text and refresh embedding/tags."""
+
+    try:
+        embedding = create_embedding(new_text)
+        tags = auto_tag_memory(new_text)
+
+        conn = get_conn()
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            UPDATE memories
+            SET text = %s,
+                embedding = %s,
+                tags = %s,
+                updated_at = NOW()
+            WHERE id = %s
+            AND is_active = TRUE
+            RETURNING id;
+            """,
+            (new_text, embedding, tags, memory_id)
+        )
+
+        updated = cur.fetchone()
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        if not updated:
+            return json.dumps({
+                "status": "not_found",
+                "message": "No active memory found with this id."
+            }, indent=2)
+
+        return json.dumps({
+            "status": "updated",
+            "memory_id": memory_id,
+            "new_text": new_text,
+            "tags": tags
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "status": "error",
+            "message": str(e)
+        }, indent=2)
 
 if __name__ == "__main__":
     mcp.run()
